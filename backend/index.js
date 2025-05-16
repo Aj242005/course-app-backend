@@ -128,6 +128,7 @@ const adminAuthentication = async (req, res, next) => {
                         }).exec().then( (something) => {
                             console.log(something);
                         })
+                        next();
                         //if only accessToken is expired for the authentication purpose
                     }
                     else{
@@ -168,6 +169,118 @@ const adminAuthentication = async (req, res, next) => {
 
 }
 
+const userAuthentication = async (req,res,next) => {
+    let accessToken = req.body.accessToken ?? "";
+    let refreshToken = req.body.refreshToken ?? "";
+    if (accessToken && refreshToken) {
+        //console.log("B");
+        let accessObj = await checkForAccessToken(accessToken, process.env.ACCESS_TOKEN_SECRET);
+        //console.log(accessObj);
+        if (accessObj === "TokenExpiredError") {
+            //console.log("C");
+            let refreshObj = await checkForRefreshToken(refreshToken, process.env.REFRESH_TOKEN_SECRET);
+            if (refreshObj === "TokenExpiredError") {
+                //console.log("D");
+                //if both of the tokens are expired for the authentication purpose
+                let userName = req.headers.username;
+                let passWord = req.headers.password;
+                let mongoInstance = await User.findOne({ username: userName }).exec();
+                if (mongoInstance != null) {
+                    checkForTheValidPassword(mongoInstance.toJSON().password, passWord);
+                    console.log(`valid password for user : ${userName}`);
+                    let messageObj = {
+                        message: "both of your tokens are expired now giving you the new ones",
+                        accessToken: createAccessToken(process.env.ACCESS_TOKEN_SECRET, process.env.TIME_VALIDITY_FOR_ACCESS_TOKEN, {
+                            username: userName,
+                            password: mongoInstance.toJSON().password
+                        }),
+                        refreshToken: createRefreshToken(process.env.REFRESH_TOKEN_SECRET, process.env.TIME_VALIDITY_FOR_REFRESH_TOKEN, {
+                            username: userName,
+                        })
+                    }
+                    res.setHeader("accessToken", messageObj.accessToken);
+                    res.setHeader("refreshToken", messageObj.refreshToken);
+                    mongoInstance.updateOne({
+                        accessToken: messageObj.accessToken,
+                        refreshToken: messageObj.refreshToken
+                    }).exec().then((something) => {
+                        console.log(something);
+                    })
+                    req.username = userName;
+                    next();
+
+                }
+                else {
+                    res.status(401).send("Unauthorized");
+                }
+            }
+            else {
+                if (refreshObj === "JsonWebTokenError") {
+                    res.status(401).send("Unauthorized")
+                }
+                else {
+                    if (refreshToken === (await User.findOne({ username: refreshObj.username }).exec()).toJSON().refreshToken) {
+                        console.log(refreshObj);
+                        let userObj = await User.findOne({ username: refreshObj.username }).exec();
+                        let messageObj = {
+                            message: "Your access Token is expired providing you a new one",
+                            accessToken: createAccessToken(process.env.ACCESS_TOKEN_SECRET, process.env.TIME_VALIDITY_FOR_ACCESS_TOKEN, {
+                                username: refreshObj.username,
+                                password: userObj.toJSON().password
+                            })
+                        }
+                        res.setHeader("accessToken", messageObj.accessToken);
+                        adminObj.updateOne({
+                            accessToken: messageObj.accessToken
+                        }).exec().then((something) => {
+                            console.log(something);
+                        })
+                        req.username = refreshObj.username;
+                        next();
+                        //if only accessToken is expired for the authentication purpose
+                    }
+                    else {
+                        res.status(401).send("Unauthorized");
+                    }
+                }
+            }
+        }
+        else {
+            if (accessObj === "JsonWebTokenError") {
+                res.status(401).send("Unauthorized");
+            }
+            else {
+                if (accessToken === (await User.findOne({ username: accessObj.username }).exec()).toJSON().accessToken) {
+                    req.username = accessObj.username;
+                    next();
+                }
+                else {
+                    res.status(401).send("Unauthorized");
+                }
+            }
+            //none of the token is expired
+        }
+    }
+    else {
+        //console.log("E");
+        let userName = req.headers.username;
+        let passWord = req.headers.password;
+        let mongoInstance = await User.findOne({ username: userName }).exec();
+        if (mongoInstance != null) {
+            checkForTheValidPassword(mongoInstance.toJSON().password, passWord);
+            console.log(`valid password for user : ${userName}`);
+            req.username = userName;
+            next();
+        }
+        else {
+            res.status(401).send("Unauthorized");
+        }
+    }
+};
+
+
+
+
 const nonEmptyCourseContent = (req,res,next) => {
     let courseObj = {
         title : req.body.title ?? "",
@@ -181,9 +294,17 @@ const nonEmptyCourseContent = (req,res,next) => {
         next()
     }
     else{
-        res.send(201).send("There should be code content");
+        res.status(400).send("There should be course content");
     }
 }
+
+const getTheCourses = async ( req, res, next ) => {
+    courses = await Course.find().exec();
+    next();
+}
+
+
+
 
 //writing all the admin routes first
 App.post("/admin/signup", checkForBlankValues, checkForUniqueUsernameAdmin, async (req, res, next) => {
@@ -224,32 +345,120 @@ App.post("/admin/courses", nonEmptyCourseContent ,adminAuthentication, (req,res,
 App.put("/admin/courses/:courseId", adminAuthentication , async(req,res,next) => {
     let courseID = req.params.courseId;
     let {title, description, price, imageLink, isLive} = req.body;
-    try{
+    if(title || description || price || imageLink || isLive){
         var courseObj = await Course.findOne({
             courseId: courseID
-        }).exec();
+        });
+        console.log(courseObj);
+        if (courseObj === null){
+            console.log("C");
+            res.status(404).end("Not Found");
+            console.log(courseObj);
+        }
+        else{
+            courseObj.updateOne({
+                courseId: courseObj.courseId,
+                title: title ?? courseObj.title,
+                description: description ?? courseObj.description,
+                price: price ?? courseObj.price,
+                imageLink: imageLink ?? courseObj.imageLink,
+                isLive: isLive ?? courseObj.isLive
+            }).exec()
+            .then( (result) => {
+                console.log("D");
+                res.status(200).send("Updated Successfully")
+                console.log(result);
+            } )
+            .catch( (err) => {
+                res.status(400).send("Bad Request");
+                console.log("E");
+                console.log(err);
+            })
+        }
     }
-    catch (err) {
-        res.status(404).end("Not Found");
-    }
-    courseObj.updateOne({
-        courseId: courseObj.courseId,
-        title: title ?? courseObj.title,
-        description: description ?? courseObj.description,
-        price: price ?? courseObj.price,
-        imageLink: imageLink ?? courseObj.imageLink,
-        isLive: isLive ?? courseObj.isLive
-    }).exec()
-    .then( (result) => {
-        res.status(200).send("Updated Successfully")
-        console.log(result);
-    } )
-    .catch( (err) => {
+    else{
         res.status(400).send("Bad Request");
-        console.log(err);
+    }
+})
+
+App.get("/admin/courses" , adminAuthentication, getTheCourses ,(req,res,next) => {
+    res.status(200).send(courses);
+    console.log(`All the courses fetched by the admin`);
+})
+
+App.post("/users/signup", checkForBlankValues ,  async(req,res,next) => {
+    let userName = req.body.username;
+    let passWord = await encryptTheGivenPassword(req.body.password, Number(process.env.SALT_ROUNDS));
+    let userObj = {
+        username: userName,
+        password: passWord,
+        accessToken: await createAccessToken(process.env.ACCESS_TOKEN_SECRET, process.env.TIME_VALIDITY_FOR_ACCESS_TOKEN, {
+            username: userName,
+            password: passWord
+        }),
+        refreshToken: await createRefreshToken(process.env.REFRESH_TOKEN_SECRET, process.env.TIME_VALIDITY_FOR_REFRESH_TOKEN, {
+            username: userName
+        })
+    }
+    addUserDetailsToDB(userObj);
+    res.status(201).json({
+        message: `User with username : ${userName} Created Successfully`,
+        accessToken: userObj.accessToken,
+        refreshToken: userObj.refreshToken
     })
 })
 
+App.post("/users/login", userAuthentication, (req,res,next)=>{
+    console.log(`User loggedIn successfully`);
+    res.status(200).send("User Logged In successfully");
+})
+
+App.get("/users/courses", userAuthentication, getTheCourses, (req,res,next) => {
+    let localCourses = courses.filter( (items) => {
+        if(items.isLive){
+            return items;
+        }
+    })
+    res.status(200).send(localCourses);
+    console.log(`All the live courses fetched by the user`);
+})
+
+App.post("/users/courses/:courseId", userAuthentication, async (req,res,next) => {
+    let courseID = req.params.courseId;
+    let courseObj = await (Course.findOne({courseId : courseID})).exec();
+    console.log(courseObj);
+    if(courseObj === null || !courseObj.isLive){
+        res.status(404).end("Not Found");
+    }
+    else{
+        let userObj = await (User.findOne({username : req.username})).exec();
+        let purchasedCourseArray = userObj.purchasedCourses;
+        purchasedCourseArray.push(courseObj)
+        userObj.updateOne({
+            purchasedCourses : purchasedCourseArray
+        }).exec()
+        .then( (result) => {
+            console.log(result);
+            res.status(200).send(`Purchased Course : ${courseObj.title} Successfully !!!`);
+        })
+        .catch( (err) => {
+            console.log(err);
+            res.status(400).send("Bad Request");
+        })
+    }
+});
+
+App.get("/users/purchasedCourses", userAuthentication, async (req,res,next) => {
+    let userObj = await User.findOne({username : req.username}).exec() ;
+    let purchased = [];
+    for(let i  = 0; i <userObj.purchasedCourses.length; i++ ){
+        let course = await Course.findOne({ _id: userObj.purchasedCourses[i] }).exec();
+        course = course.toJSON();
+        await purchased.push(course);
+    }
+    console.log(purchased);
+    res.status(200).send(purchased);
+})
 
 
 App.use( (req,res,next)=>{
